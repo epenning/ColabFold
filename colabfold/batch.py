@@ -174,10 +174,16 @@ def validate_and_fix_mmcif(cif_file: Path):
     """validate presence of _entity_poly_seq in cif file and add revision_date if missing"""
     # check that required poly_seq and revision_date fields are present
     cif_dict = MMCIF2Dict.MMCIF2Dict(cif_file)
-    if "_entity_poly_seq.mon_id" not in cif_dict:
-        raise ValueError(
-            f"mmCIF file {cif_file} is missing required field _entity_poly_seq.mon_id."
-        )
+    required = [
+        "_chem_comp.id",
+        "_chem_comp.type",
+        "_struct_asym.id",
+        "_struct_asym.entity_id",
+        "_entity_poly_seq.mon_id",
+    ]
+    for r in required:
+        if r not in cif_dict:
+            raise ValueError(f"mmCIF file {cif_file} is missing required field {r}.")
     if "_pdbx_audit_revision_history.revision_date" not in cif_dict:
         logger.info(
             f"Adding missing field revision_date to {cif_file}. Backing up original file to {cif_file}.bak."
@@ -273,11 +279,13 @@ def batch_input(
     eval_cfg = model_config.data.eval
     crop_feats = {k: [None] + v for k, v in dict(eval_cfg.feat).items()}
 
+    max_msa_clusters = eval_cfg.max_msa_clusters
+    max_extra_msa = model_config.data.common.max_extra_msa
     # templates models
     if (model_name == "model_1" or model_name == "model_2") and use_templates:
-        pad_msa_clusters = eval_cfg.max_msa_clusters - eval_cfg.max_templates
+        pad_msa_clusters = max_msa_clusters - eval_cfg.max_templates
     else:
-        pad_msa_clusters = eval_cfg.max_msa_clusters
+        pad_msa_clusters = max_msa_clusters
 
     max_msa_clusters = pad_msa_clusters
 
@@ -286,7 +294,7 @@ def batch_input(
         input_features,
         crop_feats,
         msa_cluster_size=max_msa_clusters,  # true_msa (4, 512, 68)
-        extra_msa_size=5120,  # extra_msa (4, 5120, 68)
+        extra_msa_size=max_extra_msa,  # extra_msa (4, 5120, 68)
         num_res=crop_len,  # aatype (4, 68)
         num_templates=4,
     )  # template_mask (4, 4) second value
@@ -361,13 +369,20 @@ def predict_structure(
             mean_score = mean_ptm
 
         if is_complex or model_type == "AlphaFold2-ptm":
-            logger.info(
-                f"{model_name} took {prediction_time:.1f}s ({recycles[0]} recycles) "
-                f"with pLDDT {mean_plddt:.3g} and ptmscore {mean_ptm:.3g}"
-            )
+            if model_type.startswith("AlphaFold2-multimer"):
+                mean_iptm = prediction_result["iptm"]
+                logger.info(
+                    f"{model_name} took {prediction_time:.1f}s ({recycles} recycles) "
+                    f"with pLDDT {mean_plddt:.3g}, ptmscore {mean_ptm:.3g} and iptm {mean_iptm:.3g}"
+                )
+            else:
+                logger.info(
+                    f"{model_name} took {prediction_time:.1f}s ({recycles} recycles) "
+                    f"with pLDDT {mean_plddt:.3g} and ptmscore {mean_ptm:.3g}"
+                )
         else:
             logger.info(
-                f"{model_name} took {prediction_time:.1f}s ({recycles[0]} recycles) "
+                f"{model_name} took {prediction_time:.1f}s ({recycles} recycles) "
                 f"with pLDDT {mean_plddt:.3g}"
             )
         final_atom_mask = prediction_result["structure_module"]["final_atom_mask"]
@@ -530,6 +545,8 @@ def predict_structure(
                 "plddt": np.around(np.asarray(plddts[key]), 2).tolist(),
                 "ptm": np.around(ptmscore[key], 2).item(),
             }
+            if model_type.startswith("AlphaFold2-multimer"):
+                scores["iptm"] = np.around(iptmscore[key], 2).item()
             json.dump(scores, fp)
 
         out[key] = {
@@ -1182,7 +1199,8 @@ def run(
     training: bool = False,
     use_gpu_relax: bool = False,
     stop_at_score_below: float = 0,
-    dpi: int = 200
+    dpi: int = 200,
+    max_msa: str = None,
 ):
     from alphafold.notebooks.notebook_utils import get_pae_json
     from colabfold.alphafold.models import load_models_and_params
@@ -1225,6 +1243,7 @@ def run(
         "model_order": model_order,
         "keep_existing_results": keep_existing_results,
         "rank_by": rank_by,
+        "max_msa": max_msa,
         "pair_mode": pair_mode,
         "host_url": host_url,
         "stop_at_score": stop_at_score,
@@ -1262,6 +1281,7 @@ def run(
         rank_by=rank_by,
         return_representations=save_representations,
         training=training,
+        max_msa=max_msa,
     )
     if custom_template_path is not None:
         mk_hhsearch_db(custom_template_path)
@@ -1342,6 +1362,7 @@ def run(
                 for _ in range(0, cardinality)
             ]
 
+            # only use padding if we have more than one sequence
             if sum(query_sequence_len_array) > crop_len:
                 crop_len = math.ceil(sum(query_sequence_len_array) * recompile_padding)
 
@@ -1408,7 +1429,7 @@ def run(
             input_features["msa"][0],
             query_sequence_len_array,
             query_sequence_len,
-            dpi=dpi
+            dpi=dpi,
         )
         coverage_png = result_dir.joinpath(jobname + "_coverage.png")
         msa_plot.savefig(str(coverage_png))
@@ -1494,14 +1515,14 @@ def main():
     # Main performance parameter
     parser.add_argument(
         "--stop-at-score",
-        help="Compute models until plddt or ptmscore > threshold is reached. "
+        help="Compute models until plddt (single chain) or ptmscore (complex) > threshold is reached. "
         "This can make colabfold much faster by only running the first model for easy queries.",
         type=float,
         default=100,
     )
     parser.add_argument(
         "--stop-at-score-below",
-        help="Stop to compute structures if plddt or ptmscore < threshold. "
+        help="Stop to compute structures if plddt (single chain) or ptmscore (complex) < threshold. "
         "This can make colabfold much faster by skipping sequences that do not generate good scores.",
         type=float,
         default=0,
@@ -1641,6 +1662,14 @@ def main():
         help="turn on training mode of the model to activate drop outs",
     )
     parser.add_argument(
+        "--max-msa",
+        help="defines: `max_msa_clusters:max_extra_msa` number of sequences to use",
+        type=str,
+        default=None,
+        choices=["512:5120", "512:1024", "256:512", "128:256", "64:128", "32:64"],
+    )
+
+    parser.add_argument(
         "--zip",
         default=False,
         action="store_true",
@@ -1678,6 +1707,11 @@ def main():
 
     queries, is_complex = get_queries(args.input, args.sort_queries_by)
     model_type = set_model_type(is_complex, args.model_type)
+    if model_type.startswith("AlphaFold2-multimer"):
+        logger.info(
+            f"--max-msa can not be used in combination with AlphaFold2-multimer (--max-msa ignored)"
+        )
+        args.max_msa = None
     download_alphafold_params(model_type, data_dir)
     uses_api = any((query[2] is None for query in queries))
     if uses_api and args.host_url == DEFAULT_API_SERVER:
@@ -1713,6 +1747,7 @@ def main():
         save_single_representations=args.save_single_representations,
         save_pair_representations=args.save_pair_representations,
         training=args.training,
+        max_msa=args.max_msa,
         use_gpu_relax=args.use_gpu_relax,
         stop_at_score_below=args.stop_at_score_below,
     )
