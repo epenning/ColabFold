@@ -21,8 +21,7 @@ def load_models_and_params(
     stop_at_score: float = 100,
     rank_by: str = "plddt",
     return_representations: bool = False,
-    training: bool = False,
-    output_dir: Path = None
+    training: bool = False
 ) -> List[Tuple[str, model.RunModel, haiku.Params]]:
     """We use only two actual models and swap the parameters to avoid recompiling.
 
@@ -70,7 +69,7 @@ def load_models_and_params(
             model_runner_and_params.append(
                 (
                     model_name,
-                    model.RunModel(model_config, params, is_training=training, output_dir=output_dir),
+                    model.RunModel(model_config, params, is_training=training),
                     params,
                 )
             )

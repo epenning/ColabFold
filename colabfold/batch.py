@@ -348,7 +348,7 @@ def predict_structure(
 
         # The original alphafold only returns the prediction_result,
         # but our patched alphafold also returns a tuple (recycles,tol)
-        prediction_result, recycles = model_runner.predict(input_features)
+        prediction_result, recycles = model_runner.predict(input_features, output_dir=result_dir)
 
         prediction_time = time.time() - start
         prediction_times.append(prediction_time)
@@ -1261,8 +1261,7 @@ def run(
         stop_at_score=stop_at_score,
         rank_by=rank_by,
         return_representations=save_representations,
-        training=training,
-        output_dir=result_dir
+        training=training
     )
     if custom_template_path is not None:
         mk_hhsearch_db(custom_template_path)
