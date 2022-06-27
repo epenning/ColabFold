@@ -348,7 +348,7 @@ def predict_structure(
 
         # The original alphafold only returns the prediction_result,
         # but our patched alphafold also returns a tuple (recycles,tol)
-        prediction_result, recycles = model_runner.predict(input_features, output_dir=result_dir)
+        prediction_result, recycles = model_runner.predict(input_features)
 
         prediction_time = time.time() - start
         prediction_times.append(prediction_time)
