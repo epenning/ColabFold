@@ -149,6 +149,9 @@ def mk_mock_template(
 def mk_template(
     a3m_lines: str, template_path: str, query_sequence: str
 ) -> Dict[str, Any]:
+    # logging.info("a3m_lines: " + a3m_lines)
+    # logging.info("template_path: " + template_path)
+    # logging.info("query_sequence: " + query_sequence)
     template_featurizer = templates.HhsearchHitFeaturizer(
         mmcif_dir=template_path,
         max_template_date="2100-01-01",
@@ -164,9 +167,12 @@ def mk_template(
 
     hhsearch_result = hhsearch_pdb70_runner.query(a3m_lines)
     hhsearch_hits = pipeline.parsers.parse_hhr(hhsearch_result)
+    # logging.info("hhsearch_result: " + hhsearch_result)
+    # logging.info("hhsearch_hits: " + str(hhsearch_hits))
     templates_result = template_featurizer.get_templates(
         query_sequence=query_sequence, hits=hhsearch_hits
     )
+    # logging.info("templates_result: " + str(templates_result))
     return dict(templates_result.features)
 
 
